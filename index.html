@@ -1,18 +1,326 @@
 <!DOCTYPE html>
-<html lang="en-us">
+<html lang="zh-CN">
   <head>
-    <meta charset="UTF-8">
-    <title>www.lihouguang.com by houguang</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bento Blocks - 网页版解谜</title>
+    <style>
+      :root {
+        --bg: #fff8ef;
+        --ink: #2f2a25;
+        --line: #e8d7c2;
+        --panel: #fffefb;
+        --accent: #f28f65;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--ink);
+        background: linear-gradient(180deg, #fff6ea 0%, #fff1e0 100%);
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 16px;
+      }
+      .app {
+        width: min(1060px, 100%);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 8px 20px #00000012;
+        padding: 18px;
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 14px;
+      }
+      .title { margin: 0 0 8px; color: var(--accent); }
+      .board-wrap {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #fff;
+        padding: 10px;
+      }
+      canvas { width: 100%; height: auto; display: block; border-radius: 8px; }
+      .side { display: grid; gap: 10px; align-content: start; }
+      .card {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+      }
+      .kpi { margin: 5px 0; font-size: 14px; }
+      .v { font-weight: 700; color: #bf5135; }
+      .toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      button {
+        border: 0;
+        border-radius: 8px;
+        padding: 9px;
+        background: #f28f65;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button.alt { background: #6f9acb; }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      .chip {
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fffaf5;
+        font-size: 12px;
+      }
+      @media (max-width: 860px) { .app { grid-template-columns: 1fr; } }
+    </style>
   </head>
   <body>
-    <section class="page-header">
-      <h1 class="project-name">www.lihouguang.com</h1>
-    </section>
-    <section class="main-content">网站建设中,敬请期待...</section>
+    <main class="app">
+      <section class="board-wrap">
+        <h2 class="title">Bento Blocks（便当切分拼装）</h2>
+        <canvas id="game" width="640" height="640" aria-label="Bento puzzle board"></canvas>
+      </section>
+      <aside class="side">
+        <section class="card">
+          <div class="kpi">关卡：<span id="level" class="v">1</span></div>
+          <div class="kpi">已用切割：<span id="cuts" class="v">0</span></div>
+          <div class="kpi">本关目标（3星）：≤ <span id="target" class="v">2</span> 刀</div>
+          <div class="kpi">状态：<span id="status" class="v">进行中</span></div>
+          <div class="chips" id="stars"></div>
+        </section>
+        <section class="card toolbar">
+          <button id="cutH">横切（选中块）</button>
+          <button id="cutV">竖切（选中块）</button>
+          <button class="alt" id="reset">重置本关</button>
+          <button class="alt" id="next">下一关</button>
+        </section>
+        <section class="card">
+          操作：
+          <ol>
+            <li>点击左边“食材块”选中。</li>
+            <li>用横切/竖切把块切小。</li>
+            <li>将块拖到右侧便当盒内，填满所有格子即通关。</li>
+          </ol>
+          小技巧：越少切割，星级越高。
+        </section>
+      </aside>
+    </main>
+
     <script>
-      console.log("测试支持js");
-      console.log(this);
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const ui = {
+        level: document.getElementById("level"),
+        cuts: document.getElementById("cuts"),
+        target: document.getElementById("target"),
+        status: document.getElementById("status"),
+        stars: document.getElementById("stars")
+      };
+
+      const CELL = 32;
+      const playArea = { x: 20, y: 70, w: 280, h: 540 };
+      const bentoArea = { x: 340, y: 70, w: 280, h: 540 };
+
+      const levels = [
+        { boxW: 4, boxH: 4, pieces: [{w:4,h:2},{w:2,h:2},{w:2,h:2}], targetCuts: 1 },
+        { boxW: 5, boxH: 4, pieces: [{w:5,h:2},{w:3,h:2},{w:2,h:2}], targetCuts: 2 },
+        { boxW: 5, boxH: 5, pieces: [{w:5,h:2},{w:3,h:3},{w:2,h:2}], targetCuts: 3 }
+      ];
+
+      const state = { level: 0, cuts: 0, pieces: [], selectedId: null, dragId: null, dragOffset:{x:0,y:0}, over:false };
+
+      function createPieces(lv) {
+        return lv.pieces.map((p, i) => ({
+          id: crypto.randomUUID(), w: p.w, h: p.h,
+          x: playArea.x + 10,
+          y: playArea.y + 10 + i * (p.h * CELL + 12),
+          color: ["#f8b26a", "#7fc7af", "#7ea9ff", "#f39ac2", "#ffd86b"][i % 5],
+          placed: false
+        }));
+      }
+
+      function startLevel(i) {
+        const lv = levels[i];
+        state.level = i;
+        state.cuts = 0;
+        state.over = false;
+        state.selectedId = null;
+        state.pieces = createPieces(lv);
+        updateUI();
+        draw();
+      }
+
+      function drawGrid(area, cols, rows, label) {
+        ctx.fillStyle = "#fffdf9";
+        ctx.fillRect(area.x, area.y, cols * CELL, rows * CELL);
+        ctx.strokeStyle = "#e4d2ba";
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= cols; i++) {
+          ctx.beginPath();
+          ctx.moveTo(area.x + i*CELL, area.y);
+          ctx.lineTo(area.x + i*CELL, area.y + rows*CELL);
+          ctx.stroke();
+        }
+        for (let j = 0; j <= rows; j++) {
+          ctx.beginPath();
+          ctx.moveTo(area.x, area.y + j*CELL);
+          ctx.lineTo(area.x + cols*CELL, area.y + j*CELL);
+          ctx.stroke();
+        }
+        ctx.fillStyle = "#9e7f67";
+        ctx.font = "14px sans-serif";
+        ctx.fillText(label, area.x, area.y - 10);
+      }
+
+      function drawPiece(p) {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.w * CELL, p.h * CELL);
+        ctx.strokeStyle = state.selectedId === p.id ? "#3b2f2a" : "#ffffff";
+        ctx.lineWidth = state.selectedId === p.id ? 3 : 2;
+        ctx.strokeRect(p.x + 1, p.y + 1, p.w * CELL - 2, p.h * CELL - 2);
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const lv = levels[state.level];
+        drawGrid(playArea, 8, 16, "食材区");
+        drawGrid(bentoArea, lv.boxW, lv.boxH, "便当盒");
+        state.pieces.forEach(drawPiece);
+        if (state.over) {
+          ctx.fillStyle = "#0007";
+          ctx.fillRect(0,0,canvas.width,canvas.height);
+          ctx.fillStyle = "#fff";
+          ctx.font = "bold 36px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("通关！", canvas.width/2, canvas.height/2);
+          ctx.textAlign = "left";
+        }
+      }
+
+      function updateUI() {
+        const lv = levels[state.level];
+        ui.level.textContent = state.level + 1;
+        ui.cuts.textContent = state.cuts;
+        ui.target.textContent = lv.targetCuts;
+        const stars = state.cuts <= lv.targetCuts ? 3 : state.cuts <= lv.targetCuts + 1 ? 2 : 1;
+        ui.stars.innerHTML = "";
+        for (let i = 0; i < 3; i++) {
+          const el = document.createElement("span");
+          el.className = "chip";
+          el.textContent = i < stars ? "⭐" : "☆";
+          ui.stars.appendChild(el);
+        }
+        ui.status.textContent = state.over ? `完成（${stars}星）` : "进行中";
+      }
+
+      function pickPiece(mx, my) {
+        for (let i = state.pieces.length - 1; i >= 0; i--) {
+          const p = state.pieces[i];
+          if (mx >= p.x && mx <= p.x + p.w*CELL && my >= p.y && my <= p.y + p.h*CELL) return p;
+        }
+        return null;
+      }
+
+      function splitPiece(dir) {
+        const idx = state.pieces.findIndex(p => p.id === state.selectedId);
+        if (idx < 0) return;
+        const p = state.pieces[idx];
+        if (dir === "h" && p.h >= 2) {
+          const h1 = Math.floor(p.h / 2), h2 = p.h - h1;
+          const a = { ...p, id: crypto.randomUUID(), h: h1, y: p.y };
+          const b = { ...p, id: crypto.randomUUID(), h: h2, y: p.y + h1 * CELL };
+          state.pieces.splice(idx, 1, a, b);
+          state.selectedId = a.id;
+          state.cuts++;
+        } else if (dir === "v" && p.w >= 2) {
+          const w1 = Math.floor(p.w / 2), w2 = p.w - w1;
+          const a = { ...p, id: crypto.randomUUID(), w: w1, x: p.x };
+          const b = { ...p, id: crypto.randomUUID(), w: w2, x: p.x + w1 * CELL };
+          state.pieces.splice(idx, 1, a, b);
+          state.selectedId = a.id;
+          state.cuts++;
+        }
+        updateUI();
+        draw();
+      }
+
+      function snapIntoBento(p) {
+        const lv = levels[state.level];
+        const minX = bentoArea.x, minY = bentoArea.y;
+        const maxX = bentoArea.x + lv.boxW * CELL - p.w*CELL;
+        const maxY = bentoArea.y + lv.boxH * CELL - p.h*CELL;
+        if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY) return false;
+
+        const gx = Math.round((p.x - bentoArea.x) / CELL);
+        const gy = Math.round((p.y - bentoArea.y) / CELL);
+        const tx = bentoArea.x + gx * CELL;
+        const ty = bentoArea.y + gy * CELL;
+
+        for (const o of state.pieces) {
+          if (o.id === p.id || !o.placed) continue;
+          if (tx < o.x + o.w*CELL && tx + p.w*CELL > o.x && ty < o.y + o.h*CELL && ty + p.h*CELL > o.y) return false;
+        }
+        p.x = tx; p.y = ty; p.placed = true;
+        return true;
+      }
+
+      function checkWin() {
+        const lv = levels[state.level];
+        const occupied = Array.from({length: lv.boxH}, () => Array(lv.boxW).fill(0));
+        for (const p of state.pieces) {
+          if (!p.placed) return false;
+          const gx = (p.x - bentoArea.x) / CELL;
+          const gy = (p.y - bentoArea.y) / CELL;
+          for (let y = 0; y < p.h; y++) for (let x = 0; x < p.w; x++) {
+            const rx = gx + x, ry = gy + y;
+            if (rx < 0 || ry < 0 || rx >= lv.boxW || ry >= lv.boxH || occupied[ry][rx]) return false;
+            occupied[ry][rx] = 1;
+          }
+        }
+        return occupied.every(r => r.every(Boolean));
+      }
+
+      canvas.addEventListener("mousedown", e => {
+        const r = canvas.getBoundingClientRect();
+        const mx = (e.clientX - r.left) * (canvas.width / r.width);
+        const my = (e.clientY - r.top) * (canvas.height / r.height);
+        const p = pickPiece(mx, my);
+        if (!p) return;
+        state.selectedId = p.id;
+        state.dragId = p.id;
+        state.dragOffset.x = mx - p.x;
+        state.dragOffset.y = my - p.y;
+        p.placed = false;
+        draw();
+      });
+
+      canvas.addEventListener("mousemove", e => {
+        if (!state.dragId || state.over) return;
+        const r = canvas.getBoundingClientRect();
+        const mx = (e.clientX - r.left) * (canvas.width / r.width);
+        const my = (e.clientY - r.top) * (canvas.height / r.height);
+        const p = state.pieces.find(v => v.id === state.dragId);
+        if (!p) return;
+        p.x = mx - state.dragOffset.x;
+        p.y = my - state.dragOffset.y;
+        draw();
+      });
+
+      canvas.addEventListener("mouseup", () => {
+        if (!state.dragId || state.over) return;
+        const p = state.pieces.find(v => v.id === state.dragId);
+        if (p) snapIntoBento(p);
+        state.dragId = null;
+        if (checkWin()) state.over = true;
+        updateUI();
+        draw();
+      });
+
+      document.getElementById("cutH").addEventListener("click", () => splitPiece("h"));
+      document.getElementById("cutV").addEventListener("click", () => splitPiece("v"));
+      document.getElementById("reset").addEventListener("click", () => startLevel(state.level));
+      document.getElementById("next").addEventListener("click", () => startLevel((state.level + 1) % levels.length));
+
+      startLevel(0);
     </script>
   </body>
 </html>
